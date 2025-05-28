@@ -132,3 +132,24 @@ def parse_log_entry(line, source_file):
         print(f"Parse error: {e} | Line starts: {line[:80]}")
         return None
 
+# Transform
+def transform_elb_logs():
+    records = []
+    for line, src in extract_elb_logs():
+        rec = parse_log_entry(line, src)
+        if rec:
+            records.append(rec)
+
+    if not records:
+        print("No valid records found.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    print(f"Transformed {len(df)} entries.")
+    return df
+
+df_logs = transform_elb_logs()
+# show first 5 rows
+print(df_logs.head(5))
+print(df_logs.shape)
+print(df_logs.dtypes)
