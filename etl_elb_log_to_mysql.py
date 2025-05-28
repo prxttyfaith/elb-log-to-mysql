@@ -144,7 +144,7 @@ def transform_elb_logs():
         print("No valid records found.")
         return pd.DataFrame()
 
-    df = pd.DataFrame(records)
+    df = pd.DataFrame(records)    
     print(f"Transformed {len(df)} entries.")
     return df
 
@@ -153,3 +153,14 @@ df_logs = transform_elb_logs()
 print(df_logs.head(5))
 print(df_logs.shape)
 print(df_logs.dtypes)
+
+#Load to MySQL
+def load_to_mysql(df):
+    if df.empty:
+        print("Nothing to load.")
+    else:
+        df.to_sql("elb_log_data", con=engine, if_exists="append", index=False)
+        print(f"Loaded {len(df)} rows into MySQL.")
+
+df_logs = transform_elb_logs()
+load_to_mysql(df_logs)
