@@ -163,8 +163,8 @@ def load_to_mysql(df):
         print(f"Loaded {len(df)} rows into MySQL.")
 
 df_logs = transform_elb_logs()
-# load_to_mysql(df_logs)
+load_to_mysql(df_logs)
 
 # only keep the first 5 rows
-df_to_load = df_logs.head(5)
-load_to_mysql(df_to_load)
+# df_to_load = df_logs.head(5)
+# load_to_mysql(df_to_load)
