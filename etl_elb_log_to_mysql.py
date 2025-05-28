@@ -3,6 +3,13 @@ import gzip
 import boto3
 import pandas as pd
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from io import BytesIO
+from datetime import datetime, timezone
+import pytz
+import re
+from user_agents import parse as ua_parse
+from urllib.parse import urlparse
 
 load_dotenv()
 
@@ -64,3 +71,64 @@ def parse_timestamp(ts: str) -> datetime:
         except ValueError:
             continue
     raise ValueError(f"Bad timestamp: {ts}")
+
+def parse_log_entry(line, source_file):
+    try:
+        parts = LOG_PATTERN.findall(line)
+        if len(parts) < 15:
+            # malformed
+            return None
+
+        # Timestamp
+        ts = parse_timestamp(parts[1])
+
+        # Client IP
+        client_ip = parts[3].split(":",1)[0]
+
+        # ELB + backend status
+        elb_code, backend_code = to_int(parts[8]), to_int(parts[9])
+
+        # Total processing time in ms
+        total_ms = round(
+            (to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000,
+            3
+        )
+
+        # Bytes
+        received_bytes, sent_bytes = to_int(parts[10]), to_int(parts[11])
+
+        # REQUEST: get full, then split out method + URL
+        raw_request = parts[12].strip('"')
+        try:
+            http_method, full_url, _ = raw_request.split(" ", 2)
+            up = urlparse(full_url)
+            requested_path = up.path
+        except ValueError:
+            http_method, requested_path = "Unknown", ""
+
+        # USER-AGENT: full then families
+        user_agent_full = parts[13].strip('"')
+        ua = ua_parse(user_agent_full) if user_agent_full and user_agent_full != "-" else None
+        ua_browser = ua.browser.family if ua else "Unknown"
+        ua_os      = ua.os.family      if ua else "Unknown"
+
+        return {
+            "log_timestamp":            ts,
+            "client_ip":                client_ip,
+            "http_method":              http_method,
+            "requested_path":           requested_path,
+            "elb_status_code":          elb_code,
+            "backend_status_code":      backend_code,
+            "total_processing_time_ms": total_ms,
+            "received_bytes":           received_bytes,
+            "sent_bytes":               sent_bytes,
+            "user_agent_full":          user_agent_full,
+            "ua_browser_family":        ua_browser,
+            "ua_os_family":             ua_os,
+            "log_source_file":          source_file,
+        }
+
+    except Exception as e:
+        print(f"Parse error: {e} | Line starts: {line[:80]}")
+        return None
+
