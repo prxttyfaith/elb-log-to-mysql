@@ -38,3 +38,29 @@ def extract_elb_logs():
         with gzip.GzipFile(fileobj=BytesIO(body)) as f:
             for raw in f:
                 yield raw.decode('utf-8').strip(), key
+
+# Parse Logs
+LOG_PATTERN = re.compile(r'"[^"]*"|\S+')
+EASTERN     = pytz.timezone("America/New_York")
+
+def to_int(val):
+    return int(val) if val.isdigit() else 0
+
+def to_float(val):
+    try:
+        return float(val)
+    except:
+        return 0.0
+
+def parse_timestamp(ts: str) -> datetime:
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            #Parse into a naive datetime
+            dt_naive = datetime.strptime(ts, fmt)
+            #Mark it as UTC
+            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+            #Convert to Eastern (with DST)
+            return dt_utc.astimezone(EASTERN)
+        except ValueError:
+            continue
+    raise ValueError(f"Bad timestamp: {ts}")
