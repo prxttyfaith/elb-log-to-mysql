@@ -34,6 +34,28 @@ s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY_ID,
                   region_name=AWS_REGION)
 engine = create_engine(MYSQL_URL)
 
+# Uitility function
+EASTERN     = pytz.timezone("America/New_York")
+
+def to_int(val):
+    return int(val) if val.isdigit() else 0
+
+def to_float(val):
+    try:
+        return float(val)
+    except:
+        return 0.0
+    
+def parse_timestamp(ts):
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            dt_naive = datetime.strptime(ts, fmt)
+            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+            return dt_utc.astimezone(EASTERN)
+        except ValueError:
+            continue
+    return None
+
 # Extract Logs from S3
 def extract_elb_logs():
     resp = s3.list_objects_v2(Bucket=AWS_BUCKET_NAME, Prefix=AWS_LOG_PREFIX)
@@ -48,29 +70,6 @@ def extract_elb_logs():
 
 # Parse Logs
 LOG_PATTERN = re.compile(r'"[^"]*"|\S+')
-EASTERN     = pytz.timezone("America/New_York")
-
-def to_int(val):
-    return int(val) if val.isdigit() else 0
-
-def to_float(val):
-    try:
-        return float(val)
-    except:
-        return 0.0
-
-def parse_timestamp(ts: str) -> datetime:
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            #Parse into a naive datetime
-            dt_naive = datetime.strptime(ts, fmt)
-            #Mark it as UTC
-            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
-            #Convert to Eastern (with DST)
-            return dt_utc.astimezone(EASTERN)
-        except ValueError:
-            continue
-    raise ValueError(f"Bad timestamp: {ts}")
 
 def parse_log_entry(line, source_file):
     try:
@@ -163,8 +162,4 @@ def load_to_mysql(df):
         print(f"Loaded {len(df)} rows into MySQL.")
 
 df_logs = transform_elb_logs()
-# load_to_mysql(df_logs)
-
-# only keep the first 5 rows
-df_to_load = df_logs.head(5)
-load_to_mysql(df_to_load)
+load_to_mysql(df_logs)
