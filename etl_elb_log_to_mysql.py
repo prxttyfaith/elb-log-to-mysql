@@ -2,12 +2,12 @@ import os
 import gzip
 import boto3
 import pandas as pd
+import shlex
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from io import BytesIO
 from datetime import datetime, timezone
 import pytz
-import re
 from user_agents import parse as ua_parse
 from urllib.parse import urlparse
 
@@ -34,20 +34,7 @@ s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY_ID,
                   region_name=AWS_REGION)
 engine = create_engine(MYSQL_URL)
 
-# Extract Logs from S3
-def extract_elb_logs():
-    resp = s3.list_objects_v2(Bucket=AWS_BUCKET_NAME, Prefix=AWS_LOG_PREFIX)
-    for obj in resp.get("Contents", []):
-        key = obj["Key"]
-        if not key.endswith(".gz"):
-            continue
-        body = s3.get_object(Bucket=AWS_BUCKET_NAME, Key=key)["Body"].read()
-        with gzip.GzipFile(fileobj=BytesIO(body)) as f:
-            for raw in f:
-                yield raw.decode('utf-8').strip(), key
-
-# Parse Logs
-LOG_PATTERN = re.compile(r'"[^"]*"|\S+')
+# Uitility function
 EASTERN     = pytz.timezone("America/New_York")
 
 def to_int(val):
@@ -59,112 +46,119 @@ def to_float(val):
     except:
         return 0.0
 
-def parse_timestamp(ts: str) -> datetime:
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            #Parse into a naive datetime
-            dt_naive = datetime.strptime(ts, fmt)
-            #Mark it as UTC
-            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
-            #Convert to Eastern (with DST)
-            return dt_utc.astimezone(EASTERN)
-        except ValueError:
-            continue
-    raise ValueError(f"Bad timestamp: {ts}")
+# EXTRACT: get .gz keys from S3
+def extract_log_keys(bucket, prefix=''):
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    return [obj['Key'] for obj in resp.get('Contents', []) if obj['Key'].endswith('.gz')]
 
+# PARSE: read and parse each log file
 def parse_log_entry(line, source_file):
     try:
-        parts = LOG_PATTERN.findall(line)
+        parts = shlex.split(line)
         if len(parts) < 15:
-            # malformed
             return None
-
+        
         # Timestamp
-        ts = parse_timestamp(parts[1])
-
+        ts = None
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                dt_naive = datetime.strptime(parts[1], fmt)
+                dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+                ts = dt_utc.astimezone(EASTERN)
+                break
+            except ValueError:
+                continue
+        if not ts:
+            return None
+        
         # Client IP
-        client_ip = parts[3].split(":",1)[0]
-
-        # ELB + backend status
-        elb_code, backend_code = to_int(parts[8]), to_int(parts[9])
-
-        # Total processing time in ms
-        total_ms = round(
-            (to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000,
-            3
-        )
-
+        client_ip = parts[3].split(":")[0]
+        
+        # ELB/backend status
+        elb_code = to_int(parts[8])
+        backend_code = to_int(parts[9])
+        
+        # Processing time in ms
+        total_ms = round((to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000, 3)
+        
         # Bytes
-        received_bytes, sent_bytes = to_int(parts[10]), to_int(parts[11])
-
+        received_bytes = to_int(parts[10])
+        sent_bytes = to_int(parts[11])
+        
         # REQUEST: get full, then split out method + URL
-        raw_request = parts[12].strip('"')
         try:
-            http_method, full_url, _ = raw_request.split(" ", 2)
-            up = urlparse(full_url)
-            requested_path = up.path
-        except ValueError:
+            req_split = parts[12].strip('"').split(" ", 2)
+            http_method = req_split[0]
+            full_url = req_split[1] if len(req_split) > 1 else ""
+            requested_path = urlparse(full_url).path if full_url else ""
+        except Exception:
             http_method, requested_path = "Unknown", ""
-
-        # USER-AGENT: full then families
+            
+       # USER-AGENT: full then families
         user_agent_full = parts[13].strip('"')
         ua = ua_parse(user_agent_full) if user_agent_full and user_agent_full != "-" else None
         ua_browser = ua.browser.family if ua else "Unknown"
-        ua_os      = ua.os.family      if ua else "Unknown"
-
+        ua_os = ua.os.family if ua else "Unknown"
+        
         return {
-            "log_timestamp":            ts,
-            "client_ip":                client_ip,
-            "http_method":              http_method,
-            "requested_path":           requested_path,
-            "elb_status_code":          elb_code,
-            "backend_status_code":      backend_code,
+            "log_timestamp": ts,
+            "client_ip": client_ip,
+            "http_method": http_method,
+            "requested_path": requested_path,
+            "elb_status_code": elb_code,
+            "backend_status_code": backend_code,
             "total_processing_time_ms": total_ms,
-            "received_bytes":           received_bytes,
-            "sent_bytes":               sent_bytes,
-            "user_agent_full":          user_agent_full,
-            "ua_browser_family":        ua_browser,
-            "ua_os_family":             ua_os,
-            "log_source_file":          source_file,
+            "received_bytes": received_bytes,
+            "sent_bytes": sent_bytes,
+            "user_agent_full": user_agent_full,
+            "ua_browser_family": ua_browser,
+            "ua_os_family": ua_os,
+            "log_source_file": source_file,
         }
-
     except Exception as e:
-        print(f"Parse error: {e} | Line starts: {line[:80]}")
+        print(f"[Parse error] {e} | Line: {line[:80]}")
         return None
 
-# Transform
-def transform_elb_logs():
+# TRANSFORM: read, parse, and transform logs into a DataFrame
+def transform_elb_logs(bucket, keys):
     records = []
-    for line, src in extract_elb_logs():
-        rec = parse_log_entry(line, src)
-        if rec:
-            records.append(rec)
-
-    if not records:
-        print("No valid records found.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(records)    
-    print(f"Transformed {len(df)} entries.")
+    for key in keys:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        with gzip.GzipFile(fileobj=BytesIO(obj['Body'].read())) as gz:
+            for line in gz:
+                line_decoded = line.decode('utf-8').strip()
+                parsed = parse_log_entry(line_decoded, key)
+                if parsed:
+                    records.append(parsed)
+    df = pd.DataFrame(records)
     return df
 
-df_logs = transform_elb_logs()
-# show first 5 rows
-print(df_logs.head(5))
-print(df_logs.shape)
-print(df_logs.dtypes)
-
 #Load to MySQL
-def load_to_mysql(df):
-    if df.empty:
-        print("Nothing to load.")
+def load_to_mysql(df, table='elb_log_data'):
+    if not df.empty:
+        try:
+            df.to_sql(table, con=engine, if_exists='append', index=False)
+            print(f"Loaded {len(df)} rows into MySQL table `{table}`.")
+        except Exception as e:
+            print(f"Failed to load to MySQL: {e}")
     else:
-        df.to_sql("elb_log_data", con=engine, if_exists="append", index=False)
-        print(f"Loaded {len(df)} rows into MySQL.")
+        print("Nothing to load.")
+        
+def run_etl():
+    bucket = AWS_BUCKET_NAME
+    prefix = AWS_LOG_PREFIX
+    print("Extracting log keys...")
+    keys = extract_log_keys(bucket, prefix)
+    print(f"Found {len(keys)} log files.")
+    df_logs = transform_elb_logs(bucket, keys)
+    
+    # Show preview
+    print("\n=== Data Preview ===")
+    print(df_logs.head(5))
+    print(f"\nShape: {df_logs.shape}\n")
 
-df_logs = transform_elb_logs()
-# load_to_mysql(df_logs)
+    # Attempt to load only if data is present
+    load_to_mysql(df_logs)
 
-# only keep the first 5 rows
-df_to_load = df_logs.head(5)
-load_to_mysql(df_to_load)
+if __name__ == "__main__":
+    run_etl()
