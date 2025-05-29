@@ -67,21 +67,27 @@ def parse_log_entry(line, source_file):
         parts = shlex.split(line)
         if len(parts) < 15:
             return None
+        
         # Timestamp
         ts = parse_timestamp(parts[1])
         if not ts:
             return None
+        
         # Client IP
         client_ip = parts[3].split(":")[0]
+        
         # ELB/backend status
         elb_code = to_int(parts[8])
         backend_code = to_int(parts[9])
+        
         # Processing time in ms
         total_ms = round((to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000, 3)
+        
         # Bytes
         received_bytes = to_int(parts[10])
         sent_bytes = to_int(parts[11])
-        # HTTP method + path
+        
+        # REQUEST: get full, then split out method + URL
         try:
             req_split = parts[12].strip('"').split(" ", 2)
             http_method = req_split[0]
@@ -89,11 +95,13 @@ def parse_log_entry(line, source_file):
             requested_path = urlparse(full_url).path if full_url else ""
         except Exception:
             http_method, requested_path = "Unknown", ""
-        # User agent
+            
+       # USER-AGENT: full then families
         user_agent_full = parts[13].strip('"')
         ua = ua_parse(user_agent_full) if user_agent_full and user_agent_full != "-" else None
         ua_browser = ua.browser.family if ua else "Unknown"
         ua_os = ua.os.family if ua else "Unknown"
+        
         return {
             "log_timestamp": ts,
             "client_ip": client_ip,
@@ -113,21 +121,19 @@ def parse_log_entry(line, source_file):
         print(f"[Parse error] {e} | Line: {line[:80]}")
         return None
 
-
-# Transform
-def transform_elb_logs():
+# TRANSFORM: read, parse, and transform logs into a DataFrame
+def transform_elb_logs(bucket, keys):
     records = []
-    for line, src in extract_elb_logs():
-        rec = parse_log_entry(line, src)
-        if rec:
-            records.append(rec)
-
-    if not records:
-        print("No valid records found.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(records)    
-    print(f"Transformed {len(df)} entries.")
+    for key in keys:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        with gzip.GzipFile(fileobj=BytesIO(obj['Body'].read())) as gz:
+            for line in gz:
+                line_decoded = line.decode('utf-8').strip()
+                parsed = parse_log_entry(line_decoded, key)
+                if parsed:
+                    records.append(parsed)
+    df = pd.DataFrame(records)
+    print(f"Transformed {len(df)} rows from {len(keys)} files.")
     return df
 
 df_logs = transform_elb_logs()
