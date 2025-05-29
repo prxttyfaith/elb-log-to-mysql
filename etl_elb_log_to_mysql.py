@@ -56,73 +56,63 @@ def parse_timestamp(ts):
             continue
     return None
 
-# Extract Logs from S3
+# EXTRACT: get .gz keys from S3
 def extract_log_keys(bucket, prefix=''):
     resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
     return [obj['Key'] for obj in resp.get('Contents', []) if obj['Key'].endswith('.gz')]
 
-# Parse Logs
-LOG_PATTERN = re.compile(r'"[^"]*"|\S+')
-
+# PARSE: read and parse each log file
 def parse_log_entry(line, source_file):
     try:
-        parts = LOG_PATTERN.findall(line)
+        parts = shlex.split(line)
         if len(parts) < 15:
-            # malformed
             return None
-
         # Timestamp
         ts = parse_timestamp(parts[1])
-
+        if not ts:
+            return None
         # Client IP
-        client_ip = parts[3].split(":",1)[0]
-
-        # ELB + backend status
-        elb_code, backend_code = to_int(parts[8]), to_int(parts[9])
-
-        # Total processing time in ms
-        total_ms = round(
-            (to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000,
-            3
-        )
-
+        client_ip = parts[3].split(":")[0]
+        # ELB/backend status
+        elb_code = to_int(parts[8])
+        backend_code = to_int(parts[9])
+        # Processing time in ms
+        total_ms = round((to_float(parts[5]) + to_float(parts[6]) + to_float(parts[7])) * 1000, 3)
         # Bytes
-        received_bytes, sent_bytes = to_int(parts[10]), to_int(parts[11])
-
-        # REQUEST: get full, then split out method + URL
-        raw_request = parts[12].strip('"')
+        received_bytes = to_int(parts[10])
+        sent_bytes = to_int(parts[11])
+        # HTTP method + path
         try:
-            http_method, full_url, _ = raw_request.split(" ", 2)
-            up = urlparse(full_url)
-            requested_path = up.path
-        except ValueError:
+            req_split = parts[12].strip('"').split(" ", 2)
+            http_method = req_split[0]
+            full_url = req_split[1] if len(req_split) > 1 else ""
+            requested_path = urlparse(full_url).path if full_url else ""
+        except Exception:
             http_method, requested_path = "Unknown", ""
-
-        # USER-AGENT: full then families
+        # User agent
         user_agent_full = parts[13].strip('"')
         ua = ua_parse(user_agent_full) if user_agent_full and user_agent_full != "-" else None
         ua_browser = ua.browser.family if ua else "Unknown"
-        ua_os      = ua.os.family      if ua else "Unknown"
-
+        ua_os = ua.os.family if ua else "Unknown"
         return {
-            "log_timestamp":            ts,
-            "client_ip":                client_ip,
-            "http_method":              http_method,
-            "requested_path":           requested_path,
-            "elb_status_code":          elb_code,
-            "backend_status_code":      backend_code,
+            "log_timestamp": ts,
+            "client_ip": client_ip,
+            "http_method": http_method,
+            "requested_path": requested_path,
+            "elb_status_code": elb_code,
+            "backend_status_code": backend_code,
             "total_processing_time_ms": total_ms,
-            "received_bytes":           received_bytes,
-            "sent_bytes":               sent_bytes,
-            "user_agent_full":          user_agent_full,
-            "ua_browser_family":        ua_browser,
-            "ua_os_family":             ua_os,
-            "log_source_file":          source_file,
+            "received_bytes": received_bytes,
+            "sent_bytes": sent_bytes,
+            "user_agent_full": user_agent_full,
+            "ua_browser_family": ua_browser,
+            "ua_os_family": ua_os,
+            "log_source_file": source_file,
         }
-
     except Exception as e:
-        print(f"Parse error: {e} | Line starts: {line[:80]}")
+        print(f"[Parse error] {e} | Line: {line[:80]}")
         return None
+
 
 # Transform
 def transform_elb_logs():
