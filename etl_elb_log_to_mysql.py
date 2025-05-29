@@ -149,6 +149,15 @@ def load_to_mysql(df, table='elb_log_data'):
         print(f"✅ loaded {len(df)} rows into MySQL table `{table}`.")
     else:
         print("Nothing to load.")
+        
+def run_etl():
+    bucket = AWS_BUCKET_NAME
+    prefix = AWS_LOG_PREFIX
+    print("Extracting log keys...")
+    keys = extract_log_keys(bucket, prefix)
+    print(f"Found {len(keys)} log files.")
+    df_logs = transform_elb_logs(bucket, keys)
+    load_to_mysql(df_logs)
 
-df_logs = transform_elb_logs()
-load_to_mysql(df_logs)
+if __name__ == "__main__":
+    run_etl()
