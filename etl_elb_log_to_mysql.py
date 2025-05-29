@@ -2,12 +2,12 @@ import os
 import gzip
 import boto3
 import pandas as pd
+import shlex
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from io import BytesIO
 from datetime import datetime, timezone
 import pytz
-import re
 from user_agents import parse as ua_parse
 from urllib.parse import urlparse
 
@@ -45,16 +45,6 @@ def to_float(val):
         return float(val)
     except:
         return 0.0
-    
-def parse_timestamp(ts):
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            dt_naive = datetime.strptime(ts, fmt)
-            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
-            return dt_utc.astimezone(EASTERN)
-        except ValueError:
-            continue
-    return None
 
 # EXTRACT: get .gz keys from S3
 def extract_log_keys(bucket, prefix=''):
@@ -69,7 +59,15 @@ def parse_log_entry(line, source_file):
             return None
         
         # Timestamp
-        ts = parse_timestamp(parts[1])
+        ts = None
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                dt_naive = datetime.strptime(parts[1], fmt)
+                dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+                ts = dt_utc.astimezone(EASTERN)
+                break
+            except ValueError:
+                continue
         if not ts:
             return None
         
@@ -133,20 +131,16 @@ def transform_elb_logs(bucket, keys):
                 if parsed:
                     records.append(parsed)
     df = pd.DataFrame(records)
-    print(f"Transformed {len(df)} rows from {len(keys)} files.")
     return df
-
-df_logs = transform_elb_logs()
-# show first 5 rows
-print(df_logs.head(5))
-print(df_logs.shape)
-print(df_logs.dtypes)
 
 #Load to MySQL
 def load_to_mysql(df, table='elb_log_data'):
     if not df.empty:
-        df.to_sql(table, con=engine, if_exists='append', index=False)
-        print(f"✅ loaded {len(df)} rows into MySQL table `{table}`.")
+        try:
+            df.to_sql(table, con=engine, if_exists='append', index=False)
+            print(f"Loaded {len(df)} rows into MySQL table `{table}`.")
+        except Exception as e:
+            print(f"Failed to load to MySQL: {e}")
     else:
         print("Nothing to load.")
         
@@ -157,6 +151,13 @@ def run_etl():
     keys = extract_log_keys(bucket, prefix)
     print(f"Found {len(keys)} log files.")
     df_logs = transform_elb_logs(bucket, keys)
+    
+    # Show preview
+    print("\n=== Data Preview ===")
+    print(df_logs.head(5))
+    print(f"\nShape: {df_logs.shape}\n")
+
+    # Attempt to load only if data is present
     load_to_mysql(df_logs)
 
 if __name__ == "__main__":
