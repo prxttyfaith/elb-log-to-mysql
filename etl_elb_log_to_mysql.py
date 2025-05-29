@@ -143,12 +143,12 @@ print(df_logs.shape)
 print(df_logs.dtypes)
 
 #Load to MySQL
-def load_to_mysql(df):
-    if df.empty:
-        print("Nothing to load.")
+def load_to_mysql(df, table='elb_log_data'):
+    if not df.empty:
+        df.to_sql(table, con=engine, if_exists='append', index=False)
+        print(f"✅ loaded {len(df)} rows into MySQL table `{table}`.")
     else:
-        df.to_sql("elb_log_data", con=engine, if_exists="append", index=False)
-        print(f"Loaded {len(df)} rows into MySQL.")
+        print("Nothing to load.")
 
 df_logs = transform_elb_logs()
 load_to_mysql(df_logs)
