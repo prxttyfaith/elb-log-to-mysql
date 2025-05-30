@@ -1,4 +1,4 @@
-This Python script performs an ETL (Extract, Transform, Load) process that pulls AWS Application Load Balancer (ELB) access logs from an S3 bucket, transforms the logs, and loads the processed data into a MySQL database table.
+This Python script performs an ETL (Extract, Transform, Load) process that pulls elb logs from an S3 bucket, transforms the logs, and loads the processed data into a MySQL database table.
 
 ### Tools Used
 - **Python** – for scripting the ETL logic  
