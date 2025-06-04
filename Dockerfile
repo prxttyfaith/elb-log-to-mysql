@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the ETL script and the .env file
 COPY etl_elb_log_to_mysql.py .
+COPY logger.py . 
 COPY .env .
 
 # Run the ETL script when the container starts
