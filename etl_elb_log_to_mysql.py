@@ -11,6 +11,9 @@ import pytz
 from user_agents import parse as ua_parse
 from urllib.parse import urlparse
 
+from logger import get_logger
+logger = get_logger(__name__)
+
 load_dotenv()
 
 # AWS S3 Configuration
@@ -34,8 +37,8 @@ s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY_ID,
                   region_name=AWS_REGION)
 engine = create_engine(MYSQL_URL)
 
-# Uitility function
-EASTERN     = pytz.timezone("America/New_York")
+# Utility function
+EASTERN = pytz.timezone("America/New_York")
 
 def to_int(val):
     return int(val) if val.isdigit() else 0
@@ -48,14 +51,21 @@ def to_float(val):
 
 # EXTRACT: get .gz keys from S3
 def extract_log_keys(bucket, prefix=''):
-    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    return [obj['Key'] for obj in resp.get('Contents', []) if obj['Key'].endswith('.gz')]
+    try:
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        keys = [obj['Key'] for obj in resp.get('Contents', []) if obj['Key'].endswith('.gz')]
+        logger.info(f"Extracted {len(keys)} .gz log keys from S3.")
+        return keys
+    except Exception:
+        logger.exception("Error extracting log keys from S3.")
+        return []
 
 # PARSE: read and parse each log file
 def parse_log_entry(line, source_file):
     try:
         parts = shlex.split(line)
         if len(parts) < 15:
+            logger.warning(f"Skipped line with insufficient parts (from {source_file}).")
             return None
         
         # Timestamp
@@ -69,6 +79,7 @@ def parse_log_entry(line, source_file):
             except ValueError:
                 continue
         if not ts:
+            logger.warning(f"Skipped line with invalid timestamp (from {source_file}).")
             return None
         
         # Client IP
@@ -94,7 +105,7 @@ def parse_log_entry(line, source_file):
         except Exception:
             http_method, requested_path = "Unknown", ""
             
-       # USER-AGENT: full then families
+        # USER-AGENT: full then families
         user_agent_full = parts[13].strip('"')
         ua = ua_parse(user_agent_full) if user_agent_full and user_agent_full != "-" else None
         ua_browser = ua.browser.family if ua else "Unknown"
@@ -115,49 +126,54 @@ def parse_log_entry(line, source_file):
             "ua_os_family": ua_os,
             "log_source_file": source_file,
         }
-    except Exception as e:
-        print(f"[Parse error] {e} | Line: {line[:80]}")
+    except Exception:
+        logger.exception(f"[Parse error] | Source file: {source_file} | Line: {line[:80]}")
         return None
 
 # TRANSFORM: read, parse, and transform logs into a DataFrame
 def transform_elb_logs(bucket, keys):
     records = []
     for key in keys:
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        with gzip.GzipFile(fileobj=BytesIO(obj['Body'].read())) as gz:
-            for line in gz:
-                line_decoded = line.decode('utf-8').strip()
-                parsed = parse_log_entry(line_decoded, key)
-                if parsed:
-                    records.append(parsed)
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            with gzip.GzipFile(fileobj=BytesIO(obj['Body'].read())) as gz:
+                for line in gz:
+                    line_decoded = line.decode('utf-8').strip()
+                    parsed = parse_log_entry(line_decoded, key)
+                    if parsed:
+                        records.append(parsed)
+            logger.info(f"Parsed log file: {key} ({len(records)} total records so far)")
+        except Exception:
+            logger.exception(f"Error parsing log file: {key}")
     df = pd.DataFrame(records)
     return df
 
-#Load to MySQL
+# Load to MySQL
 def load_to_mysql(df, table='elb_log_data'):
     if not df.empty:
         try:
             df.to_sql(table, con=engine, if_exists='append', index=False)
-            print(f"Loaded {len(df)} rows into MySQL table `{table}`.")
-        except Exception as e:
-            print(f"Failed to load to MySQL: {e}")
+            logger.info(f"Loaded {len(df)} rows into MySQL table `{table}`.")
+        except Exception:
+            logger.exception("Failed to load to MySQL.")
     else:
-        print("Nothing to load.")
-        
+        logger.warning("Nothing to load. DataFrame is empty.")
+
 def run_etl():
     bucket = AWS_BUCKET_NAME
     prefix = AWS_LOG_PREFIX
-    print("Extracting log keys...")
+    logger.info("Extracting log keys from S3...")
     keys = extract_log_keys(bucket, prefix)
-    print(f"Found {len(keys)} log files.")
+    logger.info(f"Found {len(keys)} log files.")
     df_logs = transform_elb_logs(bucket, keys)
-    
-    # Show preview
-    print("\n=== Data Preview ===")
-    print(df_logs.head(5))
-    print(f"\nShape: {df_logs.shape}\n")
 
-    # Attempt to load only if data is present
+    # Show preview
+    logger.info("=== Data Preview ===")
+    logger.info(f"\n{df_logs.head(5)}")
+    logger.info(f"Shape: {df_logs.shape}")
+
+    # Attempt to load only if data is present (demo: just load 1 row)
+    df_logs = df_logs.head(1)
     load_to_mysql(df_logs)
 
 if __name__ == "__main__":
