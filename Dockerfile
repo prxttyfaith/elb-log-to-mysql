@@ -13,9 +13,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the ETL script and the .env file
-COPY etl_elb_log_to_mysql.py .
-COPY .env .
+# Copy everything in this folder (including your .env, .py files, etc.)
+COPY . . 
 
 # Run the ETL script when the container starts
 CMD ["python", "etl_elb_log_to_mysql.py"]
